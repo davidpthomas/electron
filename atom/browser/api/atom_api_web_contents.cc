@@ -28,6 +28,7 @@
 #include "atom/browser/lib/bluetooth_chooser.h"
 #include "atom/browser/native_window.h"
 #include "atom/browser/net/atom_network_delegate.h"
+#include "base/threading/thread_restrictions.h"
 #if defined(ENABLE_OSR)
 #include "atom/browser/osr/osr_output_device.h"
 #include "atom/browser/osr/osr_render_widget_host_view.h"
@@ -60,6 +61,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
+#include "brightray/browser/brightray_paths.h"
 #include "brightray/browser/inspectable_web_contents.h"
 #include "brightray/browser/inspectable_web_contents_view.h"
 #include "chrome/browser/browser_process.h"
@@ -307,6 +309,10 @@ struct WebContents::FrameDispatchHelper {
                              const base::ListValue& args,
                              IPC::Message* message) {
     api_web_contents->OnRendererMessageSync(rfh, channel, args, message);
+  }
+
+  void OnCreateHeapSnapshotFile(IPC::Message* message) {
+    api_web_contents->OnCreateHeapSnapshotFile(rfh, message);
   }
 };
 
@@ -1032,6 +1038,9 @@ bool WebContents::OnMessageReceived(const IPC::Message& message,
     IPC_MESSAGE_HANDLER(AtomAutofillFrameHostMsg_ShowPopup, ShowAutofillPopup)
     IPC_MESSAGE_HANDLER(AtomAutofillFrameHostMsg_HidePopup, HideAutofillPopup)
 #endif
+    IPC_MESSAGE_FORWARD_DELAY_REPLY(
+        AtomFrameHostMsg_CreateHeapSnapshotFile, &helper,
+        FrameDispatchHelper::OnCreateHeapSnapshotFile)
     IPC_MESSAGE_UNHANDLED(handled = false)
   IPC_END_MESSAGE_MAP()
 
@@ -2099,6 +2108,29 @@ void WebContents::OnRendererMessageTo(content::RenderFrameHost* frame_host,
   if (web_contents) {
     web_contents->SendIPCMessageWithSender(send_to_all, channel, args, ID());
   }
+}
+
+void WebContents::OnCreateHeapSnapshotFile(content::RenderFrameHost* frame_host,
+                                           IPC::Message* message) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+
+  base::FilePath user_data;
+  PathService::Get(brightray::DIR_USER_DATA, &user_data);
+
+  auto now = uv_hrtime();
+  auto sec = static_cast<unsigned int>(now / 1000000);
+  auto usec = static_cast<unsigned int>(now % 1000000);
+  auto filename = base::StringPrintf("heapdump-%u.%u.heapsnapshot", sec, usec);
+
+  auto file_path = user_data.AppendASCII(filename.c_str());
+
+  base::File file(file_path,
+                  base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+
+  AtomFrameHostMsg_CreateHeapSnapshotFile::WriteReplyParams(
+      message, file_path, IPC::TakePlatformFileForTransit(std::move(file)));
+
+  frame_host->Send(message);
 }
 
 // static
